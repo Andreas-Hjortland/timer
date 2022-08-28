@@ -6,20 +6,27 @@ public enum SessionEventType
     Deactivate,
 }
 
-public record WorkingDay(DateOnly Day, IEnumerable<Session> UniqueSessions)
+public record WorkingDay(DateOnly Day, IEnumerable<MergedSession> MergedSessions)
 {
-    public TimeSpan Duration => UniqueSessions.Aggregate(TimeSpan.Zero, (l, s) => l + s.Duration);
+    public TimeSpan Duration => MergedSessions.Aggregate(TimeSpan.Zero, (l, s) => l + s.Duration);
     public override string ToString()
     {
-        return $"{Day} - {Duration}{Environment.NewLine}{string.Join(Environment.NewLine, UniqueSessions)}";
+        return $"{Day} - {Duration}{Environment.NewLine}{string.Join(Environment.NewLine, MergedSessions)}";
     }
+}
+public record MergedSession(IReadOnlyList<Session> Sessions)
+{
+    public DateTime StartTime => Sessions[0].StartTime;
+    public DateTime EndTime => Sessions[^1].EndTime;
+
+    public TimeSpan Duration => EndTime - StartTime;
 }
 public record Session(DateTime StartTime, DateTime EndTime)
 {
     public TimeSpan Duration => EndTime - StartTime;
 
-    public bool IsWorkingHours(TimeSpan workStart, TimeSpan workEnd) => StartTime.TimeOfDay <= workEnd &&
-                                                                        EndTime.TimeOfDay >= workStart &&
+    public bool IsWorkingHours(TimeOnly workStart, TimeOnly workEnd) => TimeOnly.FromDateTime(StartTime) <= workEnd &&
+                                                                        TimeOnly.FromDateTime(EndTime) >= workStart &&
                                                                         !StartTime.IsWeekend();
 }
 
@@ -33,11 +40,10 @@ public static class EventLogParser
         DayOfWeek.Sunday => true,
         _ => false
     };
-    
+
     private static DateTime Floor(this DateTime dateTime, TimeSpan interval)
     {
         var truncated = new DateTime(dateTime.Year, dateTime.Month, dateTime.Day, dateTime.Hour, dateTime.Minute, 0, 0, dateTime.Kind);
-        // TODO: Truncate seconds
         return truncated.AddTicks(-(truncated.Ticks % interval.Ticks));
     }
 
@@ -94,58 +100,44 @@ public static class EventLogParser
     }
 
     public static IEnumerable<WorkingDay> CalculateWorkingHours(
-        this IEnumerable<Session> sessions, 
-        TimeSpan workStart, 
-        TimeSpan workEnd, 
-        TimeSpan workIdle, 
+        this IEnumerable<Session> sessions,
+        TimeOnly workStart,
+        TimeOnly workEnd,
+        TimeSpan workIdle,
         TimeSpan afterIdle
     )
     {
-        var blocks = new List<Session>();
+        var blocks = new List<List<Session>> { new List<Session>() };
         DateOnly? currDay = null;
-        DateTime? currStartTime = null;
-        DateTime? currEndTime = null;
         foreach (var session in sessions)
         {
             var sessionDay = DateOnly.FromDateTime(session.StartTime);
             currDay ??= sessionDay;
-            if (currDay != sessionDay)
+            if (currDay == sessionDay)
             {
-                if (currStartTime != null && currEndTime != null)
+                if(blocks[^1].Count > 0)
                 {
-                    blocks.Add(new Session(currStartTime.Value, currEndTime.Value));
+                    var idleTimeout = session.IsWorkingHours(workStart, workEnd) ? workIdle : afterIdle;
+                    var currEndTime = blocks[^1][^1].EndTime;
+                    if ((session.StartTime - currEndTime) > idleTimeout)
+                    {
+                        blocks.Add(new List<Session>());
+                    }
                 }
-
-                yield return new WorkingDay(currDay.Value, blocks);
-                currDay = sessionDay;
-                currStartTime = session.StartTime;
-                currEndTime = session.EndTime;
-                blocks = new List<Session>();
-            }
-            else if (currStartTime != null && currEndTime != null)
-            {
-                var idleTimeout = session.IsWorkingHours(workStart, workEnd) ? workIdle : afterIdle;
-                if ((session.StartTime - currEndTime) > idleTimeout)
-                {
-                    blocks.Add(new Session(currStartTime.Value, currEndTime.Value));
-                    currStartTime = session.StartTime;
-                }
-
-                currEndTime = session.EndTime;
             }
             else
             {
-                currStartTime = session.StartTime;
-                currEndTime = session.EndTime;
+                yield return new WorkingDay(currDay.Value, blocks.Select(b => new MergedSession(b)));
+                currDay = sessionDay;
+                blocks = new List<List<Session>> { new List<Session>() };
             }
+            blocks[^1].Add(session);
         }
 
-        if (!currDay.HasValue) yield break;
-        if (currStartTime.HasValue && currEndTime.HasValue)
+        if(currDay.HasValue && blocks.Count > 0)
         {
-            blocks.Add(new Session(currStartTime.Value, currEndTime.Value));
+            yield return new WorkingDay(currDay.Value, blocks.Select(b => new MergedSession(b)));
         }
-        yield return new WorkingDay(currDay.Value, blocks);
     }
 
     public static IEnumerable<Event> Parse(WindowsIdentity id)

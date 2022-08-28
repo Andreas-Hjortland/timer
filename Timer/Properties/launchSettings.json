@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "Timer": {
+      "commandName": "Project",
+      "commandLineArgs": "-v"
+    }
+  }
+}

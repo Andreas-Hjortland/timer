@@ -6,15 +6,15 @@ var roundingOpt = new Option<TimeSpan>(
     description: "How much to round start and end times"
 );
 
-var workStartOpt = new Option<TimeSpan>(
+var workStartOpt = new Option<TimeOnly>(
     aliases: new[] { "--work-start", "--ws", "-w" },
-    getDefaultValue: () => TimeSpan.FromHours(6),
+    getDefaultValue: () => new TimeOnly(6, 0),
     description: "When the working hours start"
 );
 
-var workEndOpt = new Option<TimeSpan>(
+var workEndOpt = new Option<TimeOnly>(
     aliases: new[] { "--work-end", "--we", "-e" },
-    getDefaultValue: () => TimeSpan.FromHours(18),
+    getDefaultValue: () => new TimeOnly(18, 0),
     description: "When the working hours end"
 );
 
@@ -34,6 +34,10 @@ var summaryOpt = new Option<bool>(
     aliases: new [] { "--summary", "-s" },
     description: "Only show calculated times for each day instead of a table of all the sessions"
 );
+var verboseOpt = new Option<bool>(
+    aliases: new [] { "--verbose", "-v" },
+    description: "Show every session with a marker for which is merged"
+);
 var waitOpt = new Option<bool>(
     aliases: new [] { "--wait" },
     description: "Wait for keypress before exiting application. Useful if the console host window will close on exit"
@@ -47,9 +51,10 @@ var rootCommand = new RootCommand("Session length calculator.")
     workIdleOpt,
     afterIdleOpt,
     summaryOpt,
+    verboseOpt,
     waitOpt,
 };
-rootCommand.SetHandler((rounding, workStart, workEnd, workIdle, afterIdle, summary, waitForKeypress) =>
+rootCommand.SetHandler((rounding, workStart, workEnd, workIdle, afterIdle, summary, waitForKeypress, verbose) =>
 {
     var parsed = EventLogParser.Parse(WindowsIdentity.GetCurrent());
     var sessions = parsed.ToSessions(rounding).ToList();
@@ -61,14 +66,48 @@ rootCommand.SetHandler((rounding, workStart, workEnd, workIdle, afterIdle, summa
         Console.WriteLine(formatString, "Day", "First login", "Last logout", "Duration");
         Console.WriteLine("├────────────┼─────────────┼─────────────┼──────────┤");
         Console.WriteLine(string.Join(Environment.NewLine, workingHours.Select(h => string.Format(
-            CultureInfo.InvariantCulture, 
-            formatString, 
-            h.Day.ToString("o"), 
-            h.UniqueSessions.First().StartTime.TimeOfDay,
-            h.UniqueSessions.Last().EndTime.TimeOfDay,
+            CultureInfo.InvariantCulture,
+            formatString,
+            h.Day.ToString("o"),
+            h.MergedSessions.First().StartTime.TimeOfDay,
+            h.MergedSessions.Last().EndTime.TimeOfDay,
             h.Duration
         ))));
         Console.WriteLine("└────────────┴─────────────┴─────────────┴──────────┘");
+    }
+    else if(verbose)
+    {
+        foreach (var day in workingHours)
+        {
+            const string formatString = "│ {0,10} │ {1,8} │ {2,8} │ {3,8} │";
+            Console.WriteLine("┌────────────┬──────────┬──────────┬──────────┐");
+            Console.WriteLine(formatString, day.Day.ToString("o"), "Login", "Logout", "Duration");
+
+            int i = 1;
+            foreach (var mergedSession in day.MergedSessions)
+            {
+                int j = 1;
+                Console.WriteLine("├────────────┼──────────┼──────────┼──────────┤");
+                if(mergedSession.Sessions.Count > 1)
+                {
+                    foreach(var session in mergedSession.Sessions)
+                    {
+                        Console.WriteLine(formatString, $"{i}.{j++}", session.StartTime.TimeOfDay, session.EndTime.TimeOfDay, session.Duration);
+                    }
+                }
+                Console.WriteLine(formatString, $"Sum {i++}", mergedSession.StartTime.TimeOfDay, mergedSession.EndTime.TimeOfDay, mergedSession.Duration);
+            }
+            Console.WriteLine("╞════════════╪══════════╪══════════╪══════════┤");
+            Console.WriteLine(string.Format(
+                CultureInfo.InvariantCulture,
+                formatString,
+                "Sum",
+                day.MergedSessions.First().StartTime.TimeOfDay,
+                day.MergedSessions.Last().EndTime.TimeOfDay,
+                day.Duration
+            ));
+            Console.WriteLine("└────────────┴──────────┴──────────┴──────────┘" + Environment.NewLine);
+        }
     }
     else
     {
@@ -78,19 +117,19 @@ rootCommand.SetHandler((rounding, workStart, workEnd, workIdle, afterIdle, summa
             Console.WriteLine("┌────────────┬──────────┬──────────┬──────────┐");
             Console.WriteLine(formatString, day.Day.ToString("o"), "Login", "Logout", "Duration");
             Console.WriteLine("├────────────┼──────────┼──────────┼──────────┤");
-            
+
             int i = 1;
-            foreach (var session in day.UniqueSessions)
+            foreach (var session in day.MergedSessions)
             {
                 Console.WriteLine(formatString, i++, session.StartTime.TimeOfDay, session.EndTime.TimeOfDay, session.Duration);
             }
             Console.WriteLine("├────────────┼──────────┼──────────┼──────────┤");
             Console.WriteLine(string.Format(
-                CultureInfo.InvariantCulture, 
-                formatString, 
-                "Sum", 
-                day.UniqueSessions.First().StartTime.TimeOfDay,
-                day.UniqueSessions.Last().EndTime.TimeOfDay,
+                CultureInfo.InvariantCulture,
+                formatString,
+                "Sum",
+                day.MergedSessions.First().StartTime.TimeOfDay,
+                day.MergedSessions.Last().EndTime.TimeOfDay,
                 day.Duration
             ));
             Console.WriteLine("└────────────┴──────────┴──────────┴──────────┘" + Environment.NewLine);
@@ -102,6 +141,6 @@ rootCommand.SetHandler((rounding, workStart, workEnd, workIdle, afterIdle, summa
         Console.WriteLine("Press any key to exit...");
         Console.ReadKey();
     }
-}, roundingOpt, workStartOpt, workEndOpt, workIdleOpt, afterIdleOpt, summaryOpt, waitOpt);
+}, roundingOpt, workStartOpt, workEndOpt, workIdleOpt, afterIdleOpt, summaryOpt, waitOpt, verboseOpt);
 
 await rootCommand.InvokeAsync(args);
