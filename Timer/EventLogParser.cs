@@ -149,8 +149,12 @@ public static class EventLogParser
             <Select Path='Security'>
                 *[(
                     <!-- Local session -->
+                    System[EventID=4624] and
+                    EventData/Data[@Name='TargetUserSid']='{sid}' and
+                    EventData/Data[@Name='LogonType']!='4' <!-- filter scheduled task events -->
+                ) or (
+                    <!-- Local session logout and lock/unlock -->
                     System[
-                        EventID=4624 or
                         EventID=4647 or
                         EventID=4800 or
                         EventID=4801
